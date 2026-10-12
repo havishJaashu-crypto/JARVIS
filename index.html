@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#030a12">
+  <meta name="description" content="JARVIS — a voice-first personal assistant for your browser.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/jarvis.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>J.A.R.V.I.S. — Personal Assistant</title>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#home" aria-label="JARVIS home"><span class="brand-mark">J</span><span>J.A.R.V.I.S.<small>PERSONAL ASSISTANT</small></span></a>
+      <div class="top-controls">
+        <label class="language-control"><span>VOICE</span><select id="language"><option value="auto">AUTO · EN / TE / TANGLISH</option><option value="en-IN">ENGLISH · INDIA</option><option value="te-IN">తెలుగు · TELUGU</option></select></label>
+        <button id="wakeToggle" class="wake-toggle" type="button" aria-pressed="false"><span class="live-dot"></span><span id="wakeLabel">ENABLE WAKE WORD</span></button>
+      </div>
+    </header>
+
+    <main id="home" class="dashboard">
+      <aside class="rail left-rail">
+        <section class="panel system-panel">
+          <div class="eyebrow">SYSTEM STATUS</div>
+          <div class="status-line"><i id="statusLed" class="led"></i><span id="statusText">STANDBY</span></div>
+          <div class="metrics"><div><span>VOICE LINK</span><b id="voiceState">READY</b></div><div><span>MEMORY VAULT</span><b id="memoryCount">0 ITEMS</b></div><div><span>LOCAL TIME</span><b id="clock">--:--</b></div></div>
+        </section>
+        <section class="panel quick-panel">
+          <div class="eyebrow">QUICK ACCESS</div>
+          <button class="menu-action" id="memoryOpen" type="button"><span>◈</span> MEMORY VAULT</button>
+          <button class="menu-action" id="cameraOpen" type="button"><span>◎</span> OPEN CAMERA</button>
+          <button class="menu-action" id="locationOpen" type="button"><span>⌖</span> NEAR ME</button>
+          <button class="menu-action" id="webOpen" type="button"><span>↗</span> SEARCH THE WEB</button>
+        </section>
+        <section class="panel voice-panel">
+          <div class="eyebrow">SPOKEN RESPONSE</div>
+          <label class="switch-row"><span>Speak replies</span><input id="speakEnabled" type="checkbox" checked><i></i></label>
+          <label class="voice-label" for="voiceSelect">Installed voice</label><select id="voiceSelect" class="voice-select"><option value="">System default</option></select>
+          <p class="hint">Voice choices come from this device and browser.</p>
+        </section>
+      </aside>
+
+      <section class="core">
+        <div class="core-heading"><span class="eyebrow">VOICE-FIRST INTERFACE</span><span class="connection"><i class="led"></i> BROWSER LINK</span></div>
+        <div id="orbStage" class="orb-stage" aria-label="JARVIS listening orb">
+          <div class="orb-grid"></div><div class="ring ring-a"></div><div class="ring ring-b"></div><div class="ring ring-c"></div>
+          <div class="orb"><div class="orb-core"></div><div class="orb-glint"></div></div>
+          <div class="orb-caption"><b id="orbState">STANDBY</b><span id="orbSubstate">Say “Jarvis” or tap the microphone</span></div>
+        </div>
+        <div class="mic-controls">
+          <button id="micButton" class="mic-button" type="button" aria-label="Start listening"><span class="mic-icon">◖</span><span id="micLabel">TAP TO SPEAK</span></button>
+          <div class="privacy-note"><span class="lock">▣</span> Microphone starts only after you enable it.</div>
+        </div>
+        <form id="chatForm" class="composer"><label class="sr-only" for="messageInput">Message JARVIS</label><input id="messageInput" autocomplete="off" placeholder="Talk to JARVIS or type a message…"><button type="submit" aria-label="Send message">SEND <span>➤</span></button></form>
+      </section>
+
+      <aside class="rail right-rail">
+        <section class="panel transcript-panel">
+          <div class="panel-heading"><div><div class="eyebrow">LIVE TRANSCRIPT</div><span class="small-muted">This browser session</span></div><button id="clearChat" class="icon-button" type="button" title="Clear conversation">⌫</button></div>
+          <div id="transcript" class="transcript" aria-live="polite" aria-label="Conversation">
+            <article class="message jarvis-message"><span class="message-tag">JARVIS · READY</span><p>Namaskaram. Tap <b>Enable Wake Word</b> to start voice mode. Browsers require a tap before JARVIS can speak or listen.</p></article>
+          </div>
+        </section>
+        <section class="panel privacy-panel"><div class="eyebrow">YOUR DATA</div><p>Conversation and saved memories stay in this browser on this device. No JARVIS server is connected in this build.</p><button id="privacyDetails" class="text-action" type="button">MEMORY & PRIVACY →</button></section>
+      </aside>
+    </main>
+    <footer><span>J.A.R.V.I.S. <i>PERSONAL BROWSER ASSISTANT</i></span><span id="supportNote">VOICE SUPPORT CHECKING…</span><span>MIC · CAMERA · LOCATION ARE PERMISSION-BASED</span></footer>
+  </div>
+
+  <dialog id="memoryDialog" class="modal"><div class="modal-head"><div><span class="eyebrow">PERSONAL MEMORY</span><h2>Memory vault</h2></div><button class="icon-button close-dialog" type="button" aria-label="Close">×</button></div><p class="modal-copy">Saved only in this browser’s local storage. Add a note by typing or saying “remember …”.</p><form id="memoryForm" class="memory-form"><input id="memoryInput" placeholder="Something JARVIS should remember"><button type="submit">SAVE</button></form><div id="memoryList" class="memory-list"></div><button id="exportMemory" class="text-action" type="button">EXPORT MY MEMORIES</button><button id="deleteMemory" class="text-action danger" type="button">DELETE ALL MEMORIES</button></dialog>
+  <dialog id="cameraDialog" class="modal camera-modal"><div class="modal-head"><div><span class="eyebrow">CAMERA LINK</span><h2>Camera preview</h2></div><button class="icon-button close-dialog" type="button" aria-label="Close">×</button></div><video id="cameraVideo" autoplay playsinline muted></video><p id="cameraStatus" class="modal-copy">Camera is off until you start the preview.</p><button id="cameraStart" class="primary-button" type="button">START CAMERA</button></dialog>
+  <dialog id="locationDialog" class="modal"><div class="modal-head"><div><span class="eyebrow">LOCAL DISCOVERY</span><h2>Places near you</h2></div><button class="icon-button close-dialog" type="button" aria-label="Close">×</button></div><p id="locationStatus" class="modal-copy">Share your location to search for nearby places.</p><button id="locationStart" class="primary-button" type="button">USE MY LOCATION</button><div id="placeLinks" class="place-links"></div></dialog>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
