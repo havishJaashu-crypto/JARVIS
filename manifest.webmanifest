@@ -1,0 +1,10 @@
+{
+  "name": "J.A.R.V.I.S. Personal Assistant",
+  "short_name": "JARVIS",
+  "description": "Voice-first personal assistant for your browser",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#030a12",
+  "theme_color": "#030a12",
+  "icons": [{"src":"assets/jarvis.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+}
