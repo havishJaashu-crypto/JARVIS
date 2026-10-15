@@ -39,6 +39,19 @@
           <label class="switch-row"><span>Speak replies</span><input id="speakEnabled" type="checkbox" checked><i></i></label>
           <label class="voice-label" for="voiceSelect">Installed voice</label><select id="voiceSelect" class="voice-select"><option value="">System default</option></select>
           <p class="hint">Voice choices come from this device and browser.</p>
+          <div class="microphone-control">
+            <label class="voice-label" for="microphoneSelect">MICROPHONE INPUT</label>
+            <select id="microphoneSelect" class="voice-select" aria-label="Choose microphone">
+              <option value="">System default microphone</option>
+            </select>
+            <div class="microphone-actions">
+              <button id="refreshMicrophones" class="primary-button" type="button">REFRESH LIST</button>
+              <button id="testMicrophone" class="primary-button" type="button">TEST SELECTED MIC</button>
+            </div>
+            <div class="mic-meter" role="meter" aria-label="Microphone input level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="micMeterFill"></span></div>
+            <p id="microphoneStatus" class="hint" role="status">Test once and allow microphone access to reveal connected devices.</p>
+            <p class="hint">JARVIS requests speech recognition from this selected input where your browser supports it.</p>
+          </div>
         </section>
       </aside>
 
