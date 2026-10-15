@@ -179,7 +179,7 @@
       r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(!e.results[i].isFinal)continue;const text=e.results[i][0].transcript.trim();if(!text)continue;const match=text.match(/(?:\bjarvis\b|జార్విస్)/i);if(match){const tail=text.slice(match.index+match[0].length).replace(/^[,\s.!?]+/,'').trim();mode='command';r.stop();if(tail){handleCommand(tail,'voice');mode='wake';setTimeout(startWakeRecognition,700);}else{speak($('language').value==='te-IN'?'చెప్పండి, వింటున్నాను.':'Yes? I’m listening.',currentRecognitionLanguage(),startCommandRecognition);} }else if($('language').value==='auto'&&text.length>2){/* keep current locale; browser transcript may already be Tanglish */}}};
       r.onerror=e=>{if(e.error==='language-not-supported'&&$('language').value==='auto'){toggleAutoLanguage();return;}showRecognitionError(e.error);};
       r.onend=()=>{if(mode==='command'){startCommandRecognition();return;}if(wakeEnabled&&mode==='wake'){if($('language').value==='auto')toggleAutoLanguage();setTimeout(startWakeRecognition,350);}};
-      r.start(track);setStatus('LISTENING FOR “JARVIS”',true);$('voiceState').textContent='LISTENING';$('orbSubstate').textContent='Say “Jarvis” followed by your request';setMicrophoneStatus('Listening from '+(track.label||'the selected microphone')+'.');
+      r.start(track);setStatus('LISTENING FOR “JARVIS”',true);$('voiceState').textContent='LISTENING';$('orbSubstate').textContent='Say “Jarvis” followed by your request';setMicrophoneStatus('Browser speech recognition requested from '+(track.label||'the selected microphone')+'. If it hears another mic, this browser cannot route selected inputs.');
     }catch(error){if(wakeEnabled&&mode==='wake')handleMicrophoneStartError(error);}
     finally{wakeStartPending=false;}
   }
@@ -194,7 +194,7 @@
       r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal){got=true;clearTimeout(commandTimeout);handleCommand(e.results[i][0].transcript,'voice');mode=wakeEnabled?'wake':'stopped';}}};
       r.onerror=e=>showRecognitionError(e.error);
       r.onend=()=>{clearTimeout(commandTimeout);if(!got&&wakeEnabled)logMessage('SYSTEM','I didn’t catch that. Say “Jarvis” to try again.',false);if(wakeEnabled){mode='wake';const resume=()=>{if(speechSynthesis?.speaking){setTimeout(resume,250);return;}startWakeRecognition();};setTimeout(resume,350);}else{mode='stopped';if($('statusText').textContent==='LISTENING TO YOU')setStatus('STANDBY');}};
-      mode='command';setStatus('LISTENING TO YOU',true);$('orbSubstate').textContent='Speak now · English / Telugu / Tanglish';setMicrophoneStatus('Listening from '+(track.label||'the selected microphone')+'.');
+      mode='command';setStatus('LISTENING TO YOU',true);$('orbSubstate').textContent='Speak now · English / Telugu / Tanglish';setMicrophoneStatus('Browser speech recognition requested from '+(track.label||'the selected microphone')+'. If it hears another mic, this browser cannot route selected inputs.');
       r.start(track);commandTimeout=setTimeout(()=>{try{r.stop();}catch{}},12000);
     }catch(error){if(wakeEnabled||mode==='command')handleMicrophoneStartError(error);}
   }
