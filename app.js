@@ -3,10 +3,115 @@
   const $ = id => document.getElementById(id);
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const storeKey = 'jarvis.web.v1';
-  let data = loadData(), wakeEnabled = false, mode = 'stopped', recognizer = null, autoLanguage = 'en-IN', commandTimeout = null, voices = [], stream = null;
+  let data = loadData(), wakeEnabled = false, mode = 'stopped', recognizer = null, autoLanguage = 'en-IN', commandTimeout = null, voices = [], stream = null, micStream = null, micAudioContext = null, micAnalyser = null, micMeterFrame = 0, micTestActive = false, selectedMicId = localStorage.getItem('jarvis.web.microphone.v1') || '', wakeStartPending = false;
 
   function loadData(){ try { return Object.assign({messages:[],memories:[]},JSON.parse(localStorage.getItem(storeKey)||'{}')); } catch { return {messages:[],memories:[]}; } }
   function saveData(){ try { localStorage.setItem(storeKey,JSON.stringify(data)); } catch { setStatus('LOCAL STORAGE FULL'); } }
+  function setMicrophoneStatus(text){ $('microphoneStatus').textContent=text; }
+  function microphoneErrorMessage(error){
+    const name=error?.name||'';
+    if(name==='NotAllowedError'||name==='PermissionDeniedError')return 'Microphone permission was denied. Allow Microphone for this site in your browser settings, then try again.';
+    if(name==='NotFoundError'||name==='DevicesNotFoundError')return 'No microphone was found. Connect or enable one in Windows Sound settings, then refresh this list.';
+    if(name==='NotReadableError'||name==='TrackStartError')return 'The microphone is busy or unavailable. Close other apps using it and try again.';
+    if(name==='OverconstrainedError'||name==='ConstraintNotSatisfiedError')return 'That microphone is no longer available. Choose another input or System default.';
+    if(!window.isSecureContext)return 'Microphone access needs the secure HTTPS website. Open the JARVIS link beginning with https://.';
+    if(!navigator.mediaDevices?.getUserMedia)return 'This browser does not provide microphone capture. Open JARVIS in current Chrome or Edge.';
+    return 'Microphone could not start'+(error?.message?': '+error.message:'.');
+  }
+  async function refreshMicrophoneList(quiet=false){
+    const select=$('microphoneSelect'), wanted=selectedMicId||select.value;
+    if(!navigator.mediaDevices?.enumerateDevices){
+      select.disabled=true;
+      if(!quiet)setMicrophoneStatus(microphoneErrorMessage({name:'NotSupportedError'}));
+      return;
+    }
+    try{
+      const devices=await navigator.mediaDevices.enumerateDevices();
+      const inputs=devices.filter(d=>d.kind==='audioinput');
+      select.replaceChildren(new Option('System default microphone',''));
+      inputs.forEach((device,i)=>select.add(new Option(device.label||('Microphone '+(i+1)+' · allow access to identify'),device.deviceId)));
+      if(wanted&&!Array.from(select.options).some(o=>o.value===wanted))select.add(new Option('Saved microphone unavailable · choose another',wanted));
+      select.value=wanted||'';
+      if(!quiet&&!inputs.length)setMicrophoneStatus('No microphone is visible yet. Click Test selected mic, allow access, then refresh.');
+      else if(!quiet)setMicrophoneStatus(inputs.some(d=>d.label)?'Microphones found. Choose one, then test it.':'Only default inputs are visible until microphone permission is granted.');
+    }catch(error){
+      if(!quiet)setMicrophoneStatus('Could not list microphones: '+(error.message||error.name));
+    }
+  }
+  async function captureSelectedMicrophone(){
+    if(micStream?.getAudioTracks().some(track=>track.readyState==='live'))return micStream.getAudioTracks().find(track=>track.readyState==='live');
+    if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw new Error(microphoneErrorMessage({name:!window.isSecureContext?'SecurityError':'NotSupportedError'}));
+    const audio={echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+    if(selectedMicId)audio.deviceId={exact:selectedMicId};
+    micStream=await navigator.mediaDevices.getUserMedia({audio,video:false});
+    const track=micStream.getAudioTracks().find(item=>item.readyState==='live');
+    if(!track){stopMicrophoneCapture();throw new Error('The selected device opened without a live audio track. Choose another microphone.');}
+    track.addEventListener('ended',()=>{if(micStream?.getAudioTracks().includes(track)){setMicrophoneStatus('The microphone disconnected. Reconnect it and refresh the list.');if(wakeEnabled)disableWake();}});
+    const actual=track.getSettings?.().deviceId;
+    if(actual&&selectedMicId&&actual!==selectedMicId){setMicrophoneStatus('The browser opened a different input than requested. Check microphone selection in browser settings.');}
+    else setMicrophoneStatus('Microphone connected: '+(track.label||$('microphoneSelect').selectedOptions[0]?.text||'System default')+'.');
+    await refreshMicrophoneList(true);
+    return track;
+  }
+  function stopMicrophoneMeter(){
+    micTestActive=false;
+    if(micMeterFrame)cancelAnimationFrame(micMeterFrame);
+    micMeterFrame=0;
+    if(micAudioContext){micAudioContext.close().catch(()=>{});micAudioContext=null;micAnalyser=null;}
+    $('testMicrophone').textContent='TEST SELECTED MIC';
+    $('micMeterFill').style.width='0%';
+    $('micMeter').setAttribute('aria-valuenow','0');
+  }
+  function stopMicrophoneCapture(){
+    stopMicrophoneMeter();
+    if(micStream){micStream.getTracks().forEach(track=>track.stop());micStream=null;}
+  }
+  function startMicrophoneMeter(){
+    const AudioContextClass=window.AudioContext||window.webkitAudioContext;
+    if(!AudioContextClass){setMicrophoneStatus('Microphone is connected, but this browser cannot show an input level meter.');return;}
+    micAudioContext=new AudioContextClass();
+    micAnalyser=micAudioContext.createAnalyser();
+    micAnalyser.fftSize=512;
+    micAudioContext.createMediaStreamSource(micStream).connect(micAnalyser);
+    micAudioContext.resume().catch(()=>{});
+    const samples=new Uint8Array(micAnalyser.fftSize);
+    const draw=()=>{
+      if(!micTestActive||!micAnalyser)return;
+      micAnalyser.getByteTimeDomainData(samples);
+      let sum=0;for(const sample of samples){const value=(sample-128)/128;sum+=value*value;}
+      const level=Math.min(100,Math.round(Math.sqrt(sum/samples.length)*420));
+      $('micMeterFill').style.width=level+'%';
+      $('micMeter').setAttribute('aria-valuenow',String(level));
+      setMicrophoneStatus(level>2?'Input detected · live level '+level+'%. Speak now.':'Microphone is active. Speak toward it to see the level.');
+      micMeterFrame=requestAnimationFrame(draw);
+    };
+    draw();
+  }
+  async function testSelectedMicrophone(){
+    if(micTestActive){
+      stopMicrophoneMeter();
+      if(!wakeEnabled&&mode==='stopped')stopMicrophoneCapture();
+      setMicrophoneStatus('Microphone test stopped. Capture is off.');
+      return;
+    }
+    $('testMicrophone').disabled=true;
+    try{
+      await captureSelectedMicrophone();
+      micTestActive=true;
+      $('testMicrophone').textContent='STOP MIC TEST';
+      setMicrophoneStatus('Microphone is active. Speak now to check the input level.');
+      startMicrophoneMeter();
+    }catch(error){
+      setMicrophoneStatus(microphoneErrorMessage(error));
+    }finally{$('testMicrophone').disabled=false;}
+  }
+  function handleMicrophoneStartError(error){
+    const message=error instanceof TypeError||error?.name==='NotSupportedError'
+      ?'This browser could not start speech recognition with the selected microphone. Mic test can still confirm capture; try current Chrome or choose System default.'
+      :microphoneErrorMessage(error);
+    wakeEnabled=false;mode='stopped';wakeStartPending=false;setStatus('MICROPHONE UNAVAILABLE');$('voiceState').textContent='CHECK INPUT';setMicrophoneStatus(message);logMessage('SYSTEM',message,false);
+    if(!micTestActive)stopMicrophoneCapture();
+  }
   function setStatus(text, listening=false){ $('statusText').textContent=text; $('orbState').textContent=text; $('statusLed').classList.toggle('active',listening); $('orbStage').classList.toggle('listening',listening); $('wakeLabel').textContent=wakeEnabled?'WAKE WORD ACTIVE':'ENABLE WAKE WORD'; $('wakeToggle').setAttribute('aria-pressed',String(wakeEnabled)); $('micButton').classList.toggle('active',listening); }
   function logMessage(who,text,save=true,link=null){
     const article=document.createElement('article'); article.className='message '+(who==='YOU'?'user-message':'jarvis-message');
@@ -52,18 +157,54 @@
       'network':'The browser speech service could not connect. Check your internet connection and try again.',
       'language-not-supported':'The speech service does not support the selected language. Try English or Telugu in the Voice menu.'
     };
-    wakeEnabled=false;mode='stopped';setStatus('VOICE INPUT ERROR');$('voiceState').textContent='CHECK BROWSER';
+    wakeEnabled=false;mode='stopped';setStatus('VOICE INPUT ERROR');$('voiceState').textContent='CHECK BROWSER';if(error==='not-allowed'||error==='audio-capture')stopMicrophoneCapture();
     logMessage('SYSTEM',messages[error]||`Speech recognition failed (${error}). Check microphone permission and try Chrome.`,false);
   }
   function currentRecognitionLanguage(){const val=$('language').value;if(val==='auto')return autoLanguage;return val;}
   function makeRecognizer(continuous){if(!SpeechRecognition){$('supportNote').textContent='SPEECH RECOGNITION NOT AVAILABLE';$('voiceState').textContent='UNAVAILABLE';return null;}const r=new SpeechRecognition();r.lang=currentRecognitionLanguage();r.continuous=continuous;r.interimResults=true;r.maxAlternatives=3;return r;}
   function toggleAutoLanguage(){if($('language').value==='auto')autoLanguage=autoLanguage==='en-IN'?'te-IN':'en-IN';}
-  function startWakeRecognition(){if(!wakeEnabled||mode!=='wake')return;recognizer=makeRecognizer(true);if(!recognizer){wakeEnabled=false;setStatus('VOICE UNAVAILABLE');return;}recognizer.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(!e.results[i].isFinal)continue;const text=e.results[i][0].transcript.trim();if(!text)continue;const match=text.match(/(?:\bjarvis\b|జార్విస్)/i);if(match){const tail=text.slice(match.index+match[0].length).replace(/^[,\s.!?]+/,'').trim();mode='command';recognizer.stop();if(tail){handleCommand(tail,'voice');mode='wake';setTimeout(startWakeRecognition,700);}else{speak($('language').value==='te-IN'?'చెప్పండి, వింటున్నాను.':'Yes? I’m listening.',currentRecognitionLanguage(),startCommandRecognition);} }else if($('language').value==='auto'&&text.length>2){/* keep current locale; browser transcript may already be Tanglish */}}};recognizer.onerror=e=>{if(e.error==='language-not-supported'&&$('language').value==='auto'){toggleAutoLanguage();return;}showRecognitionError(e.error);};recognizer.onend=()=>{if(mode==='command'){startCommandRecognition();return;}if(wakeEnabled&&mode==='wake'){if($('language').value==='auto')toggleAutoLanguage();setTimeout(startWakeRecognition,350);}};try{recognizer.start();setStatus('LISTENING FOR “JARVIS”',true);$('voiceState').textContent='LISTENING';$('orbSubstate').textContent='Say “Jarvis” followed by your request';}catch{setTimeout(()=>{if(wakeEnabled&&mode==='wake')startWakeRecognition();},1000);}}
-  function startCommandRecognition(){if(!wakeEnabled&&mode!=='command')return;recognizer=makeRecognizer(false);if(!recognizer){mode=wakeEnabled?'wake':'stopped';if(wakeEnabled)startWakeRecognition();return;}let got=false;recognizer.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal){got=true;clearTimeout(commandTimeout);handleCommand(e.results[i][0].transcript,'voice');mode=wakeEnabled?'wake':'stopped';}}};recognizer.onerror=e=>showRecognitionError(e.error);recognizer.onend=()=>{clearTimeout(commandTimeout);if(!got&&wakeEnabled)logMessage('SYSTEM','I didn’t catch that. Say “Jarvis” to try again.',false);if(wakeEnabled){mode='wake';const resume=()=>{if(speechSynthesis?.speaking){setTimeout(resume,250);return;}startWakeRecognition();};setTimeout(resume,350);}else{mode='stopped';if($('statusText').textContent==='LISTENING TO YOU')setStatus('STANDBY');}};mode='command';setStatus('LISTENING TO YOU',true);$('orbSubstate').textContent='Speak now · English / Telugu / Tanglish';try{recognizer.start();commandTimeout=setTimeout(()=>{try{recognizer.stop();}catch{}},12000);}catch{mode=wakeEnabled?'wake':'stopped';if(wakeEnabled)startWakeRecognition();}}
-  function enableWake(){if(!window.isSecureContext){logMessage('SYSTEM','Microphone access requires HTTPS (or localhost). Voice replies still work after a tap, but open the live secure site for wake listening.',false);setStatus('SECURE SITE NEEDED');speak('JARVIS is ready. Open the secure website address to enable microphone listening.',currentRecognitionLanguage());return;}if(!SpeechRecognition){logMessage('SYSTEM','This browser does not provide speech recognition. Replies can still be spoken; use the text box or try a supported browser.',false);setStatus('TEXT + SPEECH MODE');speak($('language').value==='te-IN'?'జార్విస్ సిద్ధంగా ఉంది. ఈ బ్రౌజర్‌లో వాయిస్ రికగ్నిషన్ లేదు. టైప్ చేసి మాట్లాడించండి.':'JARVIS is online. This browser has no speech recognition, but I can speak replies to typed messages.',currentRecognitionLanguage());return;}wakeEnabled=true;mode='wake';setStatus('STARTING VOICE');logMessage('SYSTEM','Listening now. Say “Jarvis” followed by your request. Allow microphone access if your browser asks.',false);startWakeRecognition();}
-  function disableWake(){wakeEnabled=false;mode='stopped';if(recognizer){try{recognizer.onend=null;recognizer.stop();}catch{}}speechSynthesis?.cancel();setStatus('STANDBY');$('voiceState').textContent='READY';$('orbSubstate').textContent='Say “Jarvis” or tap the microphone';}
+  async function startWakeRecognition(){
+    if(!wakeEnabled||mode!=='wake'||wakeStartPending)return;
+    if(!SpeechRecognition){wakeEnabled=false;setStatus('VOICE UNAVAILABLE');return;}
+    wakeStartPending=true;
+    try{
+      const track=await captureSelectedMicrophone();
+      if(!wakeEnabled||mode!=='wake')return;
+      const r=makeRecognizer(true);if(!r){wakeEnabled=false;mode='stopped';stopMicrophoneCapture();setStatus('VOICE UNAVAILABLE');return;}
+      recognizer=r;
+      r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(!e.results[i].isFinal)continue;const text=e.results[i][0].transcript.trim();if(!text)continue;const match=text.match(/(?:\\bjarvis\\b|జార్విస్)/i);if(match){const tail=text.slice(match.index+match[0].length).replace(/^[,\\s.!?]+/,'').trim();mode='command';r.stop();if(tail){handleCommand(tail,'voice');mode='wake';setTimeout(startWakeRecognition,700);}else{speak($('language').value==='te-IN'?'చెప్పండి, వింటున్నాను.':'Yes? I’m listening.',currentRecognitionLanguage(),startCommandRecognition);} }else if($('language').value==='auto'&&text.length>2){/* keep current locale; browser transcript may already be Tanglish */}}};
+      r.onerror=e=>{if(e.error==='language-not-supported'&&$('language').value==='auto'){toggleAutoLanguage();return;}showRecognitionError(e.error);};
+      r.onend=()=>{if(mode==='command'){startCommandRecognition();return;}if(wakeEnabled&&mode==='wake'){if($('language').value==='auto')toggleAutoLanguage();setTimeout(startWakeRecognition,350);}};
+      r.start(track);setStatus('LISTENING FOR “JARVIS”',true);$('voiceState').textContent='LISTENING';$('orbSubstate').textContent='Say “Jarvis” followed by your request';setMicrophoneStatus('Listening from '+(track.label||'the selected microphone')+'.');
+    }catch(error){handleMicrophoneStartError(error);}
+    finally{wakeStartPending=false;}
+  }
+  async function startCommandRecognition(){
+    if(!wakeEnabled&&mode!=='command')return;
+    if(!SpeechRecognition){wakeEnabled=false;mode='stopped';setStatus('VOICE UNAVAILABLE');return;}
+    try{
+      const track=await captureSelectedMicrophone();
+      if(!wakeEnabled&&mode!=='command')return;
+      const r=makeRecognizer(false);if(!r){mode='stopped';return;}
+      recognizer=r;let got=false;
+      r.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal){got=true;clearTimeout(commandTimeout);handleCommand(e.results[i][0].transcript,'voice');mode=wakeEnabled?'wake':'stopped';}}};
+      r.onerror=e=>showRecognitionError(e.error);
+      r.onend=()=>{clearTimeout(commandTimeout);if(!got&&wakeEnabled)logMessage('SYSTEM','I didn’t catch that. Say “Jarvis” to try again.',false);if(wakeEnabled){mode='wake';const resume=()=>{if(speechSynthesis?.speaking){setTimeout(resume,250);return;}startWakeRecognition();};setTimeout(resume,350);}else{mode='stopped';if($('statusText').textContent==='LISTENING TO YOU')setStatus('STANDBY');}};
+      mode='command';setStatus('LISTENING TO YOU',true);$('orbSubstate').textContent='Speak now · English / Telugu / Tanglish';setMicrophoneStatus('Listening from '+(track.label||'the selected microphone')+'.');
+      r.start(track);commandTimeout=setTimeout(()=>{try{r.stop();}catch{}},12000);
+    }catch(error){handleMicrophoneStartError(error);}
+  }
+  function enableWake(){
+    if(!window.isSecureContext){logMessage('SYSTEM','Microphone access requires HTTPS. Open the secure JARVIS website to enable wake listening.',false);setStatus('SECURE SITE NEEDED');return;}
+    if(!SpeechRecognition){logMessage('SYSTEM','This browser does not provide speech recognition. Use Test selected mic to check hardware, or try current Chrome.',false);setStatus('TEXT + SPEECH MODE');speak('JARVIS is ready. This browser has no speech recognition, but I can speak replies to typed messages.',currentRecognitionLanguage());return;}
+    wakeEnabled=true;mode='wake';setStatus('STARTING VOICE');logMessage('SYSTEM','Requesting the selected microphone. Allow access if your browser asks, then say “Jarvis” followed by your request.',false);startWakeRecognition();
+  }
+  function disableWake(){wakeEnabled=false;mode='stopped';wakeStartPending=false;if(recognizer){try{recognizer.onend=null;recognizer.stop();}catch{}}speechSynthesis?.cancel();stopMicrophoneCapture();setStatus('STANDBY');$('voiceState').textContent='READY';$('orbSubstate').textContent='Say “Jarvis” or tap the microphone';setMicrophoneStatus('Microphone capture is off.');}
   $('wakeToggle').addEventListener('click',()=>wakeEnabled?disableWake():enableWake());
-  $('micButton').addEventListener('click',()=>{if(mode!=='stopped'){disableWake();return;}wakeEnabled=true;mode='command';$('orbSubstate').textContent='Speak now · English / Telugu / Tanglish';logMessage('SYSTEM','Listening now. Speak after the listening indicator appears.',false);startCommandRecognition();});
+  $('micButton').addEventListener('click',()=>{if(mode!=='stopped'){disableWake();return;}if(!SpeechRecognition){enableWake();return;}wakeEnabled=true;mode='command';$('orbSubstate').textContent='Speak now · English / Telugu / Tanglish';logMessage('SYSTEM','Requesting the selected microphone. Speak after the listening indicator appears.',false);startCommandRecognition();});
+  $('microphoneSelect').addEventListener('change',()=>{if(wakeEnabled||mode!=='stopped')disableWake();else stopMicrophoneCapture();selectedMicId=$('microphoneSelect').value;try{if(selectedMicId)localStorage.setItem('jarvis.web.microphone.v1',selectedMicId);else localStorage.removeItem('jarvis.web.microphone.v1');}catch{}const label=$('microphoneSelect').selectedOptions[0]?.text||'System default microphone';setMicrophoneStatus('Selected: '+label+'. Test it to confirm capture.');});
+  $('refreshMicrophones').addEventListener('click',()=>refreshMicrophoneList());
+  $('testMicrophone').addEventListener('click',testSelectedMicrophone);
   $('language').addEventListener('change',()=>{if(wakeEnabled){disableWake();enableWake();}logMessage('SYSTEM','Voice language set to '+$('language').selectedOptions[0].text+'.',false);});
   $('chatForm').addEventListener('submit',e=>{e.preventDefault();const v=$('messageInput').value.trim();if(v){$('messageInput').value='';handleCommand(v);}});
   $('clearChat').addEventListener('click',()=>{data.messages=[];saveData();$('transcript').replaceChildren();logMessage('JARVIS','Conversation cleared. Your saved memories remain in the vault.',false);});
@@ -86,7 +227,8 @@
   if('speechSynthesis'in window){const loadVoices=()=>{voices=speechSynthesis.getVoices();const sel=$('voiceSelect'),old=sel.value;sel.replaceChildren(new Option('System default',''));voices.forEach(v=>{const o=new Option(`${v.name} · ${v.lang}`,v.voiceURI);sel.add(o);});if(old)sel.value=old;};loadVoices();speechSynthesis.onvoiceschanged=loadVoices;}else{$('speakEnabled').checked=false;$('speakEnabled').disabled=true;}
   $('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});setInterval(()=>$('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),30000);
   if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  refreshMicrophoneList(true);if(navigator.mediaDevices?.addEventListener)navigator.mediaDevices.addEventListener('devicechange',()=>refreshMicrophoneList(true));
   refreshMemory();if(data.messages.length){$('transcript').replaceChildren();renderHistory();}if(SpeechRecognition){$('supportNote').textContent='SPEECH API FOUND · PERMISSION REQUIRED';}else{$('supportNote').textContent='USE CHROME FOR VOICE · TEXT STILL WORKS';}
   document.addEventListener('visibilitychange',()=>{if(wakeEnabled&&document.hidden){$('orbSubstate').textContent='Background listening depends on browser and device power policy';}});
-  window.addEventListener('beforeunload',()=>{if(stream)stream.getTracks().forEach(t=>t.stop());});
+  window.addEventListener('beforeunload',()=>{if(stream)stream.getTracks().forEach(t=>t.stop());stopMicrophoneCapture();});
 })();
