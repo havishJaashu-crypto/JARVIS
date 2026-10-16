@@ -2,11 +2,68 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const storeKey = 'jarvis.web.v1';
-  let data = loadData(), wakeEnabled = false, mode = 'stopped', recognizer = null, autoLanguage = 'en-IN', commandTimeout = null, voices = [], stream = null, micStream = null, micAudioContext = null, micAnalyser = null, micMeterFrame = 0, micTestActive = false, micRequestId = 0, selectedMicId = localStorage.getItem('jarvis.web.microphone.v1') || '', wakeStartPending = false;
+  const storeKey = 'jarvis.web.v1', aiSettingsKey = 'jarvis.web.ai.v1';
+  let data = loadData(), wakeEnabled = false, mode = 'stopped', recognizer = null, autoLanguage = 'en-IN', commandTimeout = null, voices = [], stream = null, micStream = null, micAudioContext = null, micAnalyser = null, micMeterFrame = 0, micTestActive = false, micRequestId = 0, selectedMicId = localStorage.getItem('jarvis.web.microphone.v1') || '', wakeStartPending = false, aiConfig = loadAiConfig(), aiBusy = false, aiEndpointOnline = false;
 
   function loadData(){ try { return Object.assign({messages:[],memories:[]},JSON.parse(localStorage.getItem(storeKey)||'{}')); } catch { return {messages:[],memories:[]}; } }
   function saveData(){ try { localStorage.setItem(storeKey,JSON.stringify(data)); } catch { setStatus('LOCAL STORAGE FULL'); } }
+  function loadAiConfig(){try{const saved=JSON.parse(localStorage.getItem(aiSettingsKey)||'{}');return {endpoint:typeof saved.endpoint==='string'?saved.endpoint:'',includeMemories:saved.includeMemories===true};}catch{return {endpoint:'',includeMemories:false};}}
+  function saveAiConfig(){try{localStorage.setItem(aiSettingsKey,JSON.stringify(aiConfig));}catch{setAiStatus('Could not save settings in this browser.');}}
+  function setAiStatus(message){$('aiStatus').textContent=message;$('aiConfigStatus').textContent=message;}
+  function renderAiSettings(){
+    $('aiEndpoint').value=aiConfig.endpoint;
+    $('includeMemories').checked=aiConfig.includeMemories;
+    setAiStatus(!aiConfig.endpoint?'AI BACKEND NOT CONNECTED':aiEndpointOnline?'AI BACKEND ONLINE':'AI BACKEND SAVED · CHECK CONNECTION');
+  }
+  function validateAiEndpoint(value){
+    let url;
+    try{url=new URL(value.trim());}catch{throw new Error('Enter the HTTPS Worker URL from your Cloudflare deployment.');}
+    const localHost=['localhost','127.0.0.1','[::1]'].includes(url.hostname);
+    if(url.protocol!=='https:'&&!(url.protocol==='http:'&&localHost))throw new Error('For safety, use an HTTPS backend URL.');
+    if(url.username||url.password||url.search||url.hash||url.pathname!=='/')throw new Error('Paste the Worker base URL only, without a path, query, or credentials.');
+    return url.origin;
+  }
+  async function checkAiEndpoint(endpoint){
+    const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),10000);
+    try{
+      const response=await fetch(endpoint+'/health',{headers:{Accept:'application/json'},cache:'no-store',signal:controller.signal});
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok||result.ok!==true)throw new Error(result.error||'The Worker is not ready yet. Check its URL and server-side key.');
+      return result;
+    }finally{clearTimeout(timeout);}
+  }
+  function offlineAiReply(text,options){
+    const te=options.languageHint==='telugu', tanglish=options.languageHint==='tanglish';
+    const message=te?'AI బ్యాక్‌ఎండ్ ఇంకా కనెక్ట్ కాలేదు. AI Backend Settings లో మీ Worker URL ను జోడించండి.':tanglish?'AI backend inka connect avvaledu. AI Backend Settings lo mee Worker URL add cheyyi.':'The AI backend is not connected yet. Open AI Backend Settings and add your Worker URL.';
+    respond(message,{lang:options.lang,link:searchLink(text)});
+  }
+  async function askAiBackend(text,options){
+    if(!aiConfig.endpoint){offlineAiReply(text,options);return;}
+    if(aiBusy){respond(options.languageHint==='telugu'?'ఒక సమాధానం సిద్ధమవుతోంది. దయచేసి కాసేపు ఆగండి.':options.languageHint==='tanglish'?'Oka reply prepare avutondi. Konchem wait cheyyi.':'I’m already preparing a reply. Please wait a moment.',{lang:options.lang});return;}
+    aiBusy=true;
+    const submit=$('chatForm').querySelector('button[type="submit"]');
+    submit.disabled=true;
+    setAiStatus('AI BACKEND · THINKING…');
+    try{
+      const messages=data.messages.slice(-12).map(item=>({role:item.who==='JARVIS'?'assistant':'user',content:String(item.text||'').slice(0,1800)}));
+      const payload={messages,languageHint:options.languageHint,includeMemories:aiConfig.includeMemories};
+      if(aiConfig.includeMemories)payload.memories=data.memories.slice(0,8).map(item=>item.text);
+      const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),30000);
+      let response;
+      try{response=await fetch(aiConfig.endpoint+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store',signal:controller.signal});}
+      finally{clearTimeout(timeout);}
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok||typeof result.reply!=='string'||!result.reply.trim())throw new Error(result.error||'The AI service did not return a reply.');
+      aiEndpointOnline=true;
+      setAiStatus('AI BACKEND ONLINE · READY');
+      respond(result.reply.trim(),{lang:options.lang});
+    }catch(error){
+      aiEndpointOnline=false;
+      const reason=error.name==='AbortError'?'The AI reply timed out. Check your connection and try again.':error.message==='Failed to fetch'?'Could not reach the Worker. Check the URL, internet connection, and CORS settings.':(error.message||'AI request failed.');
+      setAiStatus('AI BACKEND ERROR · CHECK SETTINGS');
+      respond('I could not reach the AI service: '+reason,{lang:options.lang,link:searchLink(text)});
+    }finally{aiBusy=false;submit.disabled=false;}
+  }
   function setMicrophoneStatus(text){ $('microphoneStatus').textContent=text; }
   function microphoneErrorMessage(error){
     const name=error?.name||'';
@@ -149,8 +206,7 @@
     if(/\b(hello|hi|hey|నమస్కారం|హాయ్)\b/i.test(t)||/^(ela unn(a|av)|bagunn(a|av)|em chestunnav|sare|namaskaram)\b/i.test(t)){respond(te?'నమస్కారం! ఎలా సహాయం చేయాలి?':tanglish?'Hey! Ela help cheyyali?':'Hey. What can I help with?',{lang});return;}
     if(/\b(what can you do|help|సహాయం)\b/.test(t)){respond(te?'నేను సమయం, తేదీ, వెబ్ సెర్చ్, దగ్గర ప్రదేశాలు, కెమెరా ప్రివ్యూ, మెమరీ వాల్ట్‌తో సహాయం చేయగలను. పెద్ద ప్రశ్నలకు వెబ్ సెర్చ్ లింక్ ఇస్తాను.':tanglish?'Time, date, web search, nearby places, camera preview, memory vault help chestanu. Pedda questions ki web search link isthanu.':'I can tell the time and date, search the web, find nearby places, open a camera preview, and save memories. For broad questions I can open a web search.',{lang});return;}
     const mood=/\b(sad|lonely|upset|angry|worried|బాధ|కోపం|భయం)\b/.test(t);if(mood){respond(te?'నువ్వు కొంచెం బాధగా లేదా ఆందోళనగా ఉన్నట్టు అనిపిస్తోంది. నేను తప్పుగా అర్థం చేసుకుంటే చెప్పు.':tanglish?'Nuvvu konchem low ga or worried ga unnav anipistondi. Nenu wrong aithe cheppu.':'You sound a little low or worried. I may be reading that wrong—want to tell me what’s going on?',{lang});return;}
-    const phr=te?'ఈ ప్రశ్నకు సరైన సమాధానం ఇవ్వడానికి వెబ్‌లో వెతుకుతున్నాను.':tanglish?'Daaniki correct answer kosam web lo search chestanu.':'I don’t have a connected AI knowledge service in this zero-cost browser build, so I don’t want to make up an answer. Here’s a web search instead.';
-    respond(phr,{lang,link:searchLink(text)});
+    askAiBackend(text,{languageHint:te?'telugu':tanglish?'tanglish':'english',lang});
   }
   function showRecognitionError(error){
     if(error==='no-speech'||error==='aborted')return;
@@ -204,6 +260,31 @@
     wakeEnabled=true;mode='wake';setStatus('STARTING VOICE');logMessage('SYSTEM','Requesting the selected microphone. Allow access if your browser asks, then say “Jarvis” followed by your request.',false);startWakeRecognition();
   }
   function disableWake(){wakeEnabled=false;mode='stopped';wakeStartPending=false;if(recognizer){try{recognizer.onend=null;recognizer.stop();}catch{}}speechSynthesis?.cancel();stopMicrophoneCapture();setStatus('STANDBY');$('voiceState').textContent='READY';$('orbSubstate').textContent='Say “Jarvis” or tap the microphone';setMicrophoneStatus('Microphone capture is off.');}
+  $('aiSettings').addEventListener('click',()=>{$('aiDialog').showModal();renderAiSettings();});
+  $('aiConfigForm').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const button=$('saveAiConfig');
+    button.disabled=true;
+    $('aiConfigStatus').textContent='Checking the Worker health endpoint…';
+    try{
+      const endpoint=validateAiEndpoint($('aiEndpoint').value);
+      aiConfig={endpoint,includeMemories:$('includeMemories').checked};
+      saveAiConfig();
+      aiEndpointOnline=false;
+      const result=await checkAiEndpoint(endpoint);
+      aiEndpointOnline=true;
+      setAiStatus('AI BACKEND ONLINE · '+(result.model||'READY'));
+    }catch(error){
+      if($('aiEndpoint').value.trim()){
+        try{aiConfig={endpoint:validateAiEndpoint($('aiEndpoint').value),includeMemories:$('includeMemories').checked};saveAiConfig();}catch{}
+      }
+      aiEndpointOnline=false;
+      setAiStatus(error.message||'Could not connect to the AI backend.');
+    }finally{button.disabled=false;}
+  });
+  $('disconnectAi').addEventListener('click',()=>{
+    aiConfig={endpoint:'',includeMemories:false};aiEndpointOnline=false;saveAiConfig();renderAiSettings();
+  });
   $('wakeToggle').addEventListener('click',()=>wakeEnabled?disableWake():enableWake());
   $('micButton').addEventListener('click',()=>{if(mode!=='stopped'){disableWake();return;}if(!SpeechRecognition){enableWake();return;}wakeEnabled=true;mode='command';$('orbSubstate').textContent='Speak now · English / Telugu / Tanglish';logMessage('SYSTEM','Requesting the selected microphone. Speak after the listening indicator appears.',false);startCommandRecognition();});
   $('microphoneSelect').addEventListener('change',()=>{if(wakeEnabled||mode!=='stopped')disableWake();else stopMicrophoneCapture();selectedMicId=$('microphoneSelect').value;try{if(selectedMicId)localStorage.setItem('jarvis.web.microphone.v1',selectedMicId);else localStorage.removeItem('jarvis.web.microphone.v1');}catch{}const label=$('microphoneSelect').selectedOptions[0]?.text||'System default microphone';setMicrophoneStatus('Selected: '+label+'. Test it to confirm capture.');});
@@ -232,7 +313,7 @@
   $('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});setInterval(()=>$('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),30000);
   if('serviceWorker'in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
   refreshMicrophoneList(true);if(navigator.mediaDevices?.addEventListener)navigator.mediaDevices.addEventListener('devicechange',()=>refreshMicrophoneList(true));
-  refreshMemory();if(data.messages.length){$('transcript').replaceChildren();renderHistory();}if(SpeechRecognition){$('supportNote').textContent='SPEECH API FOUND · PERMISSION REQUIRED';}else{$('supportNote').textContent='USE CHROME FOR VOICE · TEXT STILL WORKS';}
+  refreshMemory();renderAiSettings();if(data.messages.length){$('transcript').replaceChildren();renderHistory();}if(SpeechRecognition){$('supportNote').textContent='SPEECH API FOUND · PERMISSION REQUIRED';}else{$('supportNote').textContent='USE CHROME FOR VOICE · TEXT STILL WORKS';}
   document.addEventListener('visibilitychange',()=>{if(wakeEnabled&&document.hidden){$('orbSubstate').textContent='Background listening depends on browser and device power policy';}});
   window.addEventListener('beforeunload',()=>{if(stream)stream.getTracks().forEach(t=>t.stop());stopMicrophoneCapture();});
 })();
