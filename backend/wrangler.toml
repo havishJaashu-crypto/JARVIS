@@ -1,0 +1,11 @@
+name = "jarvis-ai-api"
+main = "worker.js"
+compatibility_date = "2026-10-16"
+
+[[ratelimits]]
+name = "AI_RATE_LIMITER"
+namespace_id = "716480233"
+
+[ratelimits.simple]
+limit = 12
+period = 60
