@@ -64,7 +64,12 @@ export default {
       return new Response(null, { status: 204, headers: headersFor(origin) });
     }
     if (url.pathname === "/health" && request.method === "GET") {
-      return json({ ok: true, service: "JARVIS AI", model: MODEL }, 200, origin);
+      const ready = Boolean(env.AI_RATE_LIMITER && env.GEMINI_API_KEY);
+      return json(
+        { ok: ready, service: "JARVIS AI", model: MODEL },
+        ready ? 200 : 503,
+        origin,
+      );
     }
     if (url.pathname !== "/api/chat") return json({ ok: false, error: "Not found." }, 404, origin);
     if (request.method !== "POST") return json({ ok: false, error: "Use POST for chat." }, 405, origin);
@@ -86,7 +91,9 @@ export default {
     let body;
     try {
       const raw = await request.text();
-      if (raw.length > MAX_BODY_BYTES) return json({ ok: false, error: "Request is too large." }, 413, origin);
+      if (new TextEncoder().encode(raw).byteLength > MAX_BODY_BYTES) {
+        return json({ ok: false, error: "Request is too large." }, 413, origin);
+      }
       body = JSON.parse(raw);
     } catch {
       return json({ ok: false, error: "Invalid JSON request." }, 400, origin);
@@ -98,7 +105,9 @@ export default {
           text: cleanText(item?.content, MAX_MESSAGE_CHARS),
         })).filter((item) => item.text)
       : [];
-    if (!messages.length || !messages.some((item) => item.role === "user")) {
+    const firstUserMessage = messages.findIndex((item) => item.role === "user");
+    const conversation = firstUserMessage < 0 ? [] : messages.slice(firstUserMessage);
+    if (!conversation.length) {
       return json({ ok: false, error: "Send a message to JARVIS first." }, 400, origin);
     }
 
@@ -123,7 +132,7 @@ export default {
           },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt(languageHint, memories) }] },
-            contents: messages.map((item) => ({
+            contents: conversation.map((item) => ({
               role: item.role,
               parts: [{ text: item.text }],
             })),
