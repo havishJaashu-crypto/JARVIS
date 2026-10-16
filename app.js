@@ -9,11 +9,13 @@
   function saveData(){ try { localStorage.setItem(storeKey,JSON.stringify(data)); } catch { setStatus('LOCAL STORAGE FULL'); } }
   function loadAiConfig(){try{const saved=JSON.parse(localStorage.getItem(aiSettingsKey)||'{}');return {endpoint:typeof saved.endpoint==='string'?saved.endpoint:'',includeMemories:saved.includeMemories===true};}catch{return {endpoint:'',includeMemories:false};}}
   function saveAiConfig(){try{localStorage.setItem(aiSettingsKey,JSON.stringify(aiConfig));}catch{setAiStatus('Could not save settings in this browser.');}}
-  function setAiStatus(message){$('aiStatus').textContent=message;$('aiConfigStatus').textContent=message;}
+  function setAiStatus(message){$('aiConfigStatus').textContent=message;}
+  function setAiBadge(message){$('aiStatus').textContent=message;}
+  function setAiState(message){setAiBadge(message);setAiStatus(message);}
   function renderAiSettings(){
     $('aiEndpoint').value=aiConfig.endpoint;
     $('includeMemories').checked=aiConfig.includeMemories;
-    setAiStatus(!aiConfig.endpoint?'AI BACKEND NOT CONNECTED':aiEndpointOnline?'AI BACKEND ONLINE':'AI BACKEND SAVED · CHECK CONNECTION');
+    setAiState(!aiConfig.endpoint?'AI BACKEND NOT CONNECTED':aiEndpointOnline?'AI BACKEND ONLINE':'AI BACKEND SAVED · CHECK CONNECTION');
   }
   function validateAiEndpoint(value){
     let url;
@@ -43,7 +45,7 @@
     aiBusy=true;
     const submit=$('chatForm').querySelector('button[type="submit"]');
     submit.disabled=true;
-    setAiStatus('AI BACKEND · THINKING…');
+    setAiState('AI BACKEND · THINKING…');
     try{
       const messages=data.messages.slice(-12).map(item=>({role:item.who==='JARVIS'?'assistant':'user',content:String(item.text||'').slice(0,1800)}));
       const payload={messages,languageHint:options.languageHint,includeMemories:aiConfig.includeMemories};
@@ -55,12 +57,12 @@
       const result=await response.json().catch(()=>({}));
       if(!response.ok||typeof result.reply!=='string'||!result.reply.trim())throw new Error(result.error||'The AI service did not return a reply.');
       aiEndpointOnline=true;
-      setAiStatus('AI BACKEND ONLINE · READY');
+      setAiState('AI BACKEND ONLINE · READY');
       respond(result.reply.trim(),{lang:options.lang});
     }catch(error){
       aiEndpointOnline=false;
       const reason=error.name==='AbortError'?'The AI reply timed out. Check your connection and try again.':error.message==='Failed to fetch'?'Could not reach the Worker. Check the URL, internet connection, and CORS settings.':(error.message||'AI request failed.');
-      setAiStatus('AI BACKEND ERROR · CHECK SETTINGS');
+      setAiState('AI BACKEND ERROR · CHECK SETTINGS');
       respond('I could not reach the AI service: '+reason,{lang:options.lang,link:searchLink(text)});
     }finally{aiBusy=false;submit.disabled=false;}
   }
@@ -265,21 +267,24 @@
     e.preventDefault();
     const button=$('saveAiConfig');
     button.disabled=true;
-    $('aiConfigStatus').textContent='Checking the Worker health endpoint…';
+    let endpointSaved=false;
+    setAiStatus('Checking the Worker health endpoint…');
     try{
       const endpoint=validateAiEndpoint($('aiEndpoint').value);
       aiConfig={endpoint,includeMemories:$('includeMemories').checked};
       saveAiConfig();
+      endpointSaved=true;
       aiEndpointOnline=false;
       const result=await checkAiEndpoint(endpoint);
       aiEndpointOnline=true;
-      setAiStatus('AI BACKEND ONLINE · '+(result.model||'READY'));
+      setAiState('AI BACKEND ONLINE · '+(result.model||'READY'));
     }catch(error){
-      if($('aiEndpoint').value.trim()){
+      if(!endpointSaved&&$('aiEndpoint').value.trim()){
         try{aiConfig={endpoint:validateAiEndpoint($('aiEndpoint').value),includeMemories:$('includeMemories').checked};saveAiConfig();}catch{}
       }
       aiEndpointOnline=false;
       setAiStatus(error.message||'Could not connect to the AI backend.');
+      setAiBadge(endpointSaved?'AI BACKEND ERROR · CHECK SETTINGS':aiConfig.endpoint?'AI BACKEND SAVED · CHECK CONNECTION':'AI BACKEND NOT CONNECTED');
     }finally{button.disabled=false;}
   });
   $('disconnectAi').addEventListener('click',()=>{
